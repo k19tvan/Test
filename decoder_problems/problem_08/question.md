@@ -1,0 +1,2 @@
+# Problem 08 Questions
+1.B 2.C 3.A 4.B 5.C

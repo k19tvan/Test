@@ -52,16 +52,16 @@ optimizer:
   params:
     -
       params: '^(?=.*backbone)(?!.*norm|bn).*$'
-      lr: 0.0001
+      lr: 0.00015625
     -
       params: '^(?=.*backbone)(?=.*norm|bn).*$'
-      lr: 0.0001
+      lr: 0.00015625
       weight_decay: 0.
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
       weight_decay: 0.
 
-  lr: 0.0002
+  lr: 0.00015625
   betas: [0.9, 0.999]
   weight_decay: 0.0001
 
@@ -69,7 +69,7 @@ optimizer:
 # Increase to search for the optimal ema
 epochs: 160 # 148 + 4n
 train_dataloader:
-  total_batch_size: 32
+  total_batch_size: 50
   dataset:
     transforms:
       policy:
@@ -80,4 +80,4 @@ train_dataloader:
     base_size_repeat: ~
 
 val_dataloader:
-  total_batch_size: 32
+  total_batch_size: 50

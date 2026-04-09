@@ -45,7 +45,6 @@ class MLP(nn.Module):
             x = self.act(layer(x)) if i < self.num_layers - 1 else layer(x)
         return x
 
-
 class MSDeformableAttention(nn.Module):
     def __init__(
         self,

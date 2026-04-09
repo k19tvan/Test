@@ -11,8 +11,8 @@ train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /home/enn/workspace/dataset/coco_minitrain_25k/images/train2017
-    ann_file: /home/enn/workspace/dataset/coco_minitrain_25k/annotations/instances_train2017.json
+    img_folder: /kaggle/input/datasets/antvnh/coco-minitrain-25k/coco_minitrain_25k/images/train2017
+    ann_file: /kaggle/input/datasets/antvnh/coco-25kminitrain-annotation/annotations/instances_train2017.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /home/enn/workspace/dataset/coco_minitrain_25k/images/val2017
-    ann_file: /home/enn/workspace/dataset/coco_minitrain_25k/annotations/instances_val2017.json
+    img_folder: /kaggle/input/datasets/antvnh/coco-minitrain-25k/coco_minitrain_25k/images/val2017
+    ann_file: /kaggle/input/datasets/antvnh/coco-25kminitrain-annotation/annotations/instances_val2017.json
     return_masks: False
     transforms:
       type: Compose

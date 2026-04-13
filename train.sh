@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=4,0 torchrun --master_port=7777 --nproc_per_node=3 train.py -c /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/Test/configs/dfine/custom/objects365/dfine_s_test_loss.yml --use-amp --seed=0 -t /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/models/dfine_s_obj365.pth

@@ -42,6 +42,7 @@ class DFINECriterion(nn.Module):
         reg_max=32,
         boxes_weight_format=None,
         share_matched_indices=False,
+        fisheye_alpha=1.5,
     ):
         """Create the criterion.
         Parameters:
@@ -65,6 +66,18 @@ class DFINECriterion(nn.Module):
         self.own_targets, self.own_targets_dn = None, None
         self.reg_max = reg_max
         self.num_pos, self.num_neg = None, None
+        self.fisheye_alpha = fisheye_alpha
+        self._logged_fisheye_stats = False
+
+    def get_fisheye_weight(self, bboxes, alpha=None):
+        """Calculates penalty weight based on distance from center for Fisheye images."""
+        if alpha is None:
+            alpha = self.fisheye_alpha
+        if bboxes.shape[0] == 0:
+            return torch.empty(0, device=bboxes.device)
+        centers = bboxes[:, :2]
+        rho = torch.norm(centers - 0.5, dim=-1) / 0.7071
+        return (1.0 + alpha * (rho ** 2)).to(dtype=bboxes.dtype)
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert "pred_logits" in outputs
@@ -112,6 +125,14 @@ class DFINECriterion(nn.Module):
         loss = F.binary_cross_entropy_with_logits(
             src_logits, target_score, weight=weight, reduction="none"
         )
+        
+        target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        if target_boxes.shape[0] > 0:
+            spatial_weights = self.get_fisheye_weight(target_boxes).to(loss.dtype)
+            loss_weighted = loss.clone()
+            loss_weighted[idx] = loss_weighted[idx] * spatial_weights.unsqueeze(-1)
+            loss = loss_weighted
+
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
         return {"loss_vfl": loss}
 
@@ -125,13 +146,26 @@ class DFINECriterion(nn.Module):
         src_boxes = outputs["pred_boxes"][idx]
         target_boxes = torch.cat([t["boxes"][i] for t, (_, i) in zip(targets, indices)], dim=0)
         losses = {}
+        
+        spatial_weights = self.get_fisheye_weight(target_boxes) if target_boxes.shape[0] > 0 else torch.empty(0, device=target_boxes.device)
+        spatial_weights = spatial_weights.to(src_boxes.dtype)
+        
+        if not self._logged_fisheye_stats and spatial_weights.shape[0] > 0:
+            print(f"[Fisheye Loss] Applied Spatial Weights | Min: {spatial_weights.min().item():.4f}, Max: {spatial_weights.max().item():.4f}, Mean: {spatial_weights.mean().item():.4f}")
+            self._logged_fisheye_stats = True
+            
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction="none")
+        if loss_bbox.shape[0] > 0:
+            loss_bbox = loss_bbox * spatial_weights.unsqueeze(-1)
         losses["loss_bbox"] = loss_bbox.sum() / num_boxes
 
         loss_giou = 1 - torch.diag(
             generalized_box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes))
         )
         loss_giou = loss_giou if boxes_weight is None else loss_giou * boxes_weight
+        if loss_giou.shape[0] > 0:
+            loss_giou = loss_giou * spatial_weights
+            
         losses["loss_giou"] = loss_giou.sum() / num_boxes
 
         return losses
@@ -176,12 +210,18 @@ class DFINECriterion(nn.Module):
             )
             weight_targets = ious.unsqueeze(-1).repeat(1, 1, 4).reshape(-1).detach()
 
+            if target_boxes.shape[0] > 0:
+                spatial_weights = self.get_fisheye_weight(target_boxes).to(weight_targets.dtype)
+                weight_targets_fisheye = weight_targets * spatial_weights.repeat_interleave(4)
+            else:
+                weight_targets_fisheye = weight_targets
+
             losses["loss_fgl"] = self.unimodal_distribution_focal_loss(
                 pred_corners,
                 target_corners,
                 weight_right,
                 weight_left,
-                weight_targets,
+                weight_targets_fisheye,
                 avg_factor=num_boxes,
             )
 

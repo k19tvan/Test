@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=3,6 torchrun --master_port=7777 --nproc_per_node=2 train.py -c /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/Test/configs/dfine/custom/objects365/dfine_hgnetv2_s_obj2custom.yml --test-only -r /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/Test/output/dfine_s_960_baseline/best_stg2.pth

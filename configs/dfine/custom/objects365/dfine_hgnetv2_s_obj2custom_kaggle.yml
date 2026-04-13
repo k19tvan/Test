@@ -1,5 +1,5 @@
 __include__: [
-  '../../../dataset/custom_detection.yml',
+  '../../../dataset/kaggle_dataset.yml',
   '../../../runtime.yml',
   '../../include/dataloader.yml',
   '../../include/optimizer.yml',
@@ -35,25 +35,24 @@ optimizer:
   params:
     -
       params: '^(?=.*backbone)(?!.*norm|bn).*$'
-      lr: 0.00009375
-
+      lr: 0.000078125
     -
       params: '^(?=.*backbone)(?=.*norm|bn).*$'
-      lr: 0.00009375
+      lr: 0.000078125
 
       weight_decay: 0.
     -
       params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
       weight_decay: 0.
 
-  lr:  0.0001875
+  lr:  0.00015625
   betas: [0.9, 0.999]
   weight_decay: 0.000125
 
 
 epochs: 80 # Early stop
 train_dataloader:
-  total_batch_size: 24
+  total_batch_size: 20
   dataset:
     transforms:
       policy:

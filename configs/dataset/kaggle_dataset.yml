@@ -11,8 +11,8 @@ train_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/dataset/Fisheye8K_resized_960/train/images
-    ann_file: /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/dataset/Fisheye8K_resized_960/train/train.json
+    img_folder: /kaggle/input/datasets/flap1812/fisheye8k/Fisheye8K/train/images
+    ann_file: /kaggle/input/datasets/flap1812/fisheye8k/Fisheye8K/train/train.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/dataset/Fisheye8K_resized_960/test/images
-    ann_file: /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/dataset/Fisheye8K_resized_960/test/test.json
+    img_folder: /kaggle/input/datasets/flap1812/fisheye8k/Fisheye8K/test/images
+    ann_file: /kaggle/input/datasets/flap1812/fisheye8k/Fisheye8K/test/test.json
     return_masks: False
     transforms:
       type: Compose

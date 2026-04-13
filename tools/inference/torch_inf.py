@@ -43,7 +43,7 @@ def process_image(model, device, file_path):
 
     transforms = T.Compose(
         [
-            T.Resize((640, 640)),
+            T.Resize((960, 960)),
             T.ToTensor(),
         ]
     )

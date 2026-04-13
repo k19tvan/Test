@@ -6,7 +6,7 @@ __include__: [
   '../../include/dfine_hgnetv2.yml',
 ]
 
-output_dir: ./output/dfine_s_960_baseline
+output_dir: ./output/dfine_s_960_topk_weighting_func
 
 
 DFINE:

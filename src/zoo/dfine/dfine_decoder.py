@@ -270,28 +270,55 @@ class Gate(nn.Module):
         return self.norm(gate1 * x1 + gate2 * x2)
 
 
-class Integral(nn.Module):
+class SpatialAwareIntegral(nn.Module):
     """
-    A static layer that calculates integral results from a distribution.
-
-    This layer computes the target location using the formula: `sum{Pr(n) * W(n)}`,
-    where Pr(n) is the softmax probability vector representing the discrete
-    distribution, and W(n) is the non-uniform Weighting Function.
-
-    Args:
-        reg_max (int): Max number of the discrete bins. Default is 32.
-                       It can be adjusted based on the dataset or task requirements.
+    A layer that calculates integral results from a distribution dynamically,
+    incorporating spatial-aware distribution refinement for Fisheye images.
     """
 
     def __init__(self, reg_max=32):
-        super(Integral, self).__init__()
+        super(SpatialAwareIntegral, self).__init__()
         self.reg_max = reg_max
 
-    def forward(self, x, project):
+    def forward(self, x, ref_points, up_base, reg_scale_base):
         shape = x.shape
-        x = F.softmax(x.reshape(-1, self.reg_max + 1), dim=1)
-        x = F.linear(x, project.to(x.device)).reshape(-1, 4)
-        return x.reshape(list(shape[:-1]) + [-1])
+        B, L = shape[0], shape[1]
+        
+        # log to check
+        if not hasattr(self, '_logged_once'):
+            print("[INFO] SpatialAwareIntegral has been initialized and used!")
+            self._logged_once = True
+
+        center = torch.tensor([0.5, 0.5], device=x.device, dtype=x.dtype)
+        rho = torch.norm(ref_points[..., :2] - center, dim=-1) / 0.7071
+
+        lam = 2.0
+        gamma = 1.5
+
+        a_dyn = up_base * torch.exp(-lam * (rho ** 2))
+        reg_scale_dyn = reg_scale_base * (1.0 + gamma * (rho ** 2))
+
+        upper_bound1 = torch.abs(a_dyn) * torch.abs(reg_scale_dyn)
+        upper_bound2 = upper_bound1 * 2.0
+        step = (upper_bound1 + 1.0) ** (2.0 / (self.reg_max - 2))
+
+        left_i = torch.arange(self.reg_max // 2 - 1, 0, -1, device=x.device, dtype=x.dtype)
+        right_i = torch.arange(1, self.reg_max // 2, device=x.device, dtype=x.dtype)
+
+        step_unsqueeze = step.unsqueeze(-1)
+        left_values = -(step_unsqueeze ** left_i.view(1, 1, -1)) + 1.0
+        right_values = (step_unsqueeze ** right_i.view(1, 1, -1)) - 1.0
+
+        zero_val = torch.zeros((B, L, 1), device=x.device, dtype=x.dtype)
+        up2 = -upper_bound2.unsqueeze(-1)
+        down2 = upper_bound2.unsqueeze(-1)
+
+        project_dynamic = torch.cat([up2, left_values, zero_val, right_values, down2], dim=-1)
+
+        prob = F.softmax(x.reshape(B, L, -1, self.reg_max + 1), dim=-1)
+        out = torch.einsum('blck,blk->blc', prob, project_dynamic)
+
+        return out.reshape(list(shape[:-1]) + [-1])
 
 
 class LQE(nn.Module):
@@ -305,7 +332,8 @@ class LQE(nn.Module):
 
     def forward(self, scores, pred_corners):
         B, L, _ = pred_corners.size()
-        prob = F.softmax(pred_corners.reshape(B, L, 4, self.reg_max + 1), dim=-1)
+        
+        prob = F.softmax(pred_corners.reshape(B, L, 4, self.reg_max + 1), dim=-1) 
         prob_topk, _ = prob.topk(self.k, dim=-1)
         stat = torch.cat([prob_topk, prob_topk.mean(dim=-1, keepdim=True)], dim=-1)
         quality_score = self.reg_conf(stat.reshape(B, L, -1))
@@ -393,10 +421,6 @@ class TransformerDecoder(nn.Module):
         dec_out_logits = []
         dec_out_pred_corners = []
         dec_out_refs = []
-        if not hasattr(self, "project"):
-            project = weighting_function(self.reg_max, up, reg_scale)
-        else:
-            project = self.project
 
         ref_points_detach = F.sigmoid(ref_points_unact)
 
@@ -426,7 +450,7 @@ class TransformerDecoder(nn.Module):
             # Refine bounding box corners using FDR, integrating previous layer's corrections
             pred_corners = bbox_head[i](output + output_detach) + pred_corners_undetach
             inter_ref_bbox = distance2bbox(
-                ref_points_initial, integral(pred_corners, project), reg_scale
+                ref_points_initial, integral(pred_corners, ref_points_initial, up, reg_scale), reg_scale
             )
 
             if self.training or i == self.eval_idx:
@@ -446,12 +470,12 @@ class TransformerDecoder(nn.Module):
             output_detach = output.detach()
 
         return (
-            torch.stack(dec_out_bboxes),
-            torch.stack(dec_out_logits),
-            torch.stack(dec_out_pred_corners),
-            torch.stack(dec_out_refs),
-            pre_bboxes,
-            pre_scores,
+            torch.stack(dec_out_bboxes), # bbox after refinement at each layer
+            torch.stack(dec_out_logits), # bbox quality score + classification score at each layer
+            torch.stack(dec_out_pred_corners), # logit of distribution for each corner at each layer
+            torch.stack(dec_out_refs),# Theo code thi cai nay giu nguyen ref points dau vao, khong thay doi qua cac layer, co the dung de tinh loss cho ref points dau vao
+            pre_bboxes, # initial bbox predictions before refinement
+            pre_scores, # initial classification scores before refinement
         )
 
 
@@ -609,7 +633,7 @@ class DFINETransformer(nn.Module):
                 for _ in range(num_layers - self.eval_idx - 1)
             ]
         )
-        self.integral = Integral(self.reg_max)
+        self.integral = SpatialAwareIntegral(self.reg_max)
 
         # init encoder output anchors and valid_mask
         if self.eval_spatial_size:
@@ -771,9 +795,21 @@ class DFINETransformer(nn.Module):
         output_memory: torch.Tensor = self.enc_output(memory)
         enc_outputs_logits: torch.Tensor = self.enc_score_head(output_memory)
 
+        # Fisheye spatial bias
+        alpha = 2.0
+        anchors_centers = torch.sigmoid(anchors)[..., :2]
+        center = torch.tensor([0.5, 0.5], device=anchors.device, dtype=anchors.dtype)
+        rho = torch.norm(anchors_centers - center, dim=-1) / 0.7071
+        spatial_bias = 1.0 + alpha * (rho ** 2)
+
+        # log spatial bias
+        if not hasattr(self, '_logged_bias_once'):
+            print(f"[INFO] Using Spatial Bias for FishEye Optimization!")
+            self._logged_bias_once = True
+
         enc_topk_bboxes_list, enc_topk_logits_list = [], []
         enc_topk_memory, enc_topk_logits, enc_topk_anchors = self._select_topk(
-            output_memory, enc_outputs_logits, anchors, self.num_queries
+            output_memory, enc_outputs_logits, anchors, self.num_queries, spatial_bias
         )
 
         enc_topk_bbox_unact: torch.Tensor = self.enc_bbox_head(enc_topk_memory) + enc_topk_anchors
@@ -805,16 +841,26 @@ class DFINETransformer(nn.Module):
         outputs_logits: torch.Tensor,
         outputs_anchors_unact: torch.Tensor,
         topk: int,
+        spatial_bias: torch.Tensor = None,
     ):
         if self.query_select_method == "default":
-            _, topk_ind = torch.topk(outputs_logits.max(-1).values, topk, dim=-1)
+            scores = outputs_logits.max(-1).values
+            if spatial_bias is not None:
+                scores = scores * spatial_bias
+            _, topk_ind = torch.topk(scores, topk, dim=-1)
 
         elif self.query_select_method == "one2many":
-            _, topk_ind = torch.topk(outputs_logits.flatten(1), topk, dim=-1)
+            scores = outputs_logits.flatten(1)
+            if spatial_bias is not None:
+                scores = scores * spatial_bias.unsqueeze(-1).repeat(1, 1, self.num_classes).flatten(1)
+            _, topk_ind = torch.topk(scores, topk, dim=-1)
             topk_ind = topk_ind // self.num_classes
 
         elif self.query_select_method == "agnostic":
-            _, topk_ind = torch.topk(outputs_logits.squeeze(-1), topk, dim=-1)
+            scores = outputs_logits.squeeze(-1)
+            if spatial_bias is not None:
+                scores = scores * spatial_bias
+            _, topk_ind = torch.topk(scores, topk, dim=-1)
 
         topk_ind: torch.Tensor
 
@@ -876,9 +922,11 @@ class DFINETransformer(nn.Module):
             attn_mask=attn_mask,
             dn_meta=dn_meta,
         )
+        
+        
 
         if self.training and dn_meta is not None:
-            dn_pre_logits, pre_logits = torch.split(pre_logits, dn_meta["dn_num_split"], dim=1)
+            dn_pre_logits, pre_logits = torch.split(pre_logits, dn_meta["dn_num_split"], dim=1) 
             dn_pre_bboxes, pre_bboxes = torch.split(pre_bboxes, dn_meta["dn_num_split"], dim=1)
             dn_out_bboxes, out_bboxes = torch.split(out_bboxes, dn_meta["dn_num_split"], dim=2)
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta["dn_num_split"], dim=2)
@@ -888,10 +936,10 @@ class DFINETransformer(nn.Module):
 
         if self.training:
             out = {
-                "pred_logits": out_logits[-1],
-                "pred_boxes": out_bboxes[-1],
-                "pred_corners": out_corners[-1],
-                "ref_points": out_refs[-1],
+                "pred_logits": out_logits[-1], # Final layer's classification scores + bbox quality scores for each query
+                "pred_boxes": out_bboxes[-1], # Final layer's refined bounding box predictions for each query
+                "pred_corners": out_corners[-1], # Final layer's distribution logits for each corner of the bounding box for each query
+                "ref_points": out_refs[-1], # Initial reference points for each query, used for calculating loss against initial predictions
                 "up": self.up,
                 "reg_scale": self.reg_scale,
             }
@@ -900,7 +948,7 @@ class DFINETransformer(nn.Module):
 
         if self.training and self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss2(
-                out_logits[:-1],
+                out_logits[:-1], 
                 out_bboxes[:-1],
                 out_corners[:-1],
                 out_refs[:-1],

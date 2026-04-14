@@ -1,0 +1,2 @@
+CUDA_VISIBLE_DEVICES=1 python tools/inference/torch_inf.py -c /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/Test/configs/dfine/custom/objects365/dfine_hgnetv2_s_obj2custom.yml -r /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/Test/output/dfine_s_960_baseline/best_stg2.pth -i /workingspace_aiclub/WorkingSpace/Personal/nguyenmv/Enn/dataset/Fisheye8K_resized_960/test/images --vis-n 5 -w 8 -b 4
+

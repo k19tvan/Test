@@ -67,7 +67,7 @@ ema:
   warmups: 0
 
 val_dataloader:
-  total_batch_size: 20
+  total_batch_size: 30
 
 lr_warmup_scheduler:
   warmup_duration: 0

@@ -425,9 +425,22 @@ class TransformerDecoder(nn.Module):
 
             # Refine bounding box corners using FDR, integrating previous layer's corrections
             pred_corners = bbox_head[i](output + output_detach) + pred_corners_undetach
+            
+            # --- Fisheye Spatially-Variant FDR Integral ---
+            base_delta = integral(pred_corners, project)
+            centers = ref_points_initial[..., :2]
+            rho = torch.norm(centers - 0.5, dim=-1, keepdim=True) / 0.7071
+            
+            # W(i) * P(i) * Phi(x, y): Điều chỉnh độ lớn của bước nhảy [0.5, 2.0]
+            # Ở lượng giác tâm: cos(0) = 1 => 0.5 + 1.5 = 2.0
+            # Ở lượng giác góc viền: cos(pi/2) = 0 => 0.5 + 0 = 0.5
+            phi_scale = 0.5 + 1.5 * torch.cos(rho * (math.pi / 2.0))
+            scaled_delta = base_delta * phi_scale
+            
             inter_ref_bbox = distance2bbox(
-                ref_points_initial, integral(pred_corners, project), reg_scale
+                ref_points_initial, scaled_delta, reg_scale
             )
+            # ----------------------------------------------
 
             if self.training or i == self.eval_idx:
                 scores = score_head[i](output)
@@ -806,15 +819,24 @@ class DFINETransformer(nn.Module):
         outputs_anchors_unact: torch.Tensor,
         topk: int,
     ):
+        # --- Fisheye Boundary Bias ---
+        # Tăng (boost) điểm số logic cho các anchor nằm ở rìa (rho tiến dần về 1)
+        centers = F.sigmoid(outputs_anchors_unact[..., :2])
+        rho = torch.norm(centers - 0.5, dim=-1) / 0.7071
+        boundary_bias = rho * 1.0  # Scalar bias tùy chỉnh (ví dụ: +1.0 logit score cho điểm cực viền)
+        
         if self.query_select_method == "default":
-            _, topk_ind = torch.topk(outputs_logits.max(-1).values, topk, dim=-1)
+            sort_metric = outputs_logits.max(-1).values + boundary_bias
+            _, topk_ind = torch.topk(sort_metric, topk, dim=-1)
 
         elif self.query_select_method == "one2many":
-            _, topk_ind = torch.topk(outputs_logits.flatten(1), topk, dim=-1)
+            sort_metric = outputs_logits.flatten(1) + boundary_bias.unsqueeze(-1).repeat(1, self.num_classes).flatten(1)
+            _, topk_ind = torch.topk(sort_metric, topk, dim=-1)
             topk_ind = topk_ind // self.num_classes
 
         elif self.query_select_method == "agnostic":
-            _, topk_ind = torch.topk(outputs_logits.squeeze(-1), topk, dim=-1)
+            sort_metric = outputs_logits.squeeze(-1) + boundary_bias
+            _, topk_ind = torch.topk(sort_metric, topk, dim=-1)
 
         topk_ind: torch.Tensor
 

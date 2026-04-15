@@ -287,10 +287,12 @@ class Integral(nn.Module):
         super(Integral, self).__init__()
         self.reg_max = reg_max
 
-    def forward(self, x, project):
+    def forward(self, x, project, phi=None):
         shape = x.shape
         x = F.softmax(x.reshape(-1, self.reg_max + 1), dim=1)
         x = F.linear(x, project.to(x.device)).reshape(-1, 4)
+        if phi is not None:
+            x = x * (1 + phi.reshape(-1, 4))
         return x.reshape(list(shape[:-1]) + [-1])
 
 
@@ -376,6 +378,7 @@ class TransformerDecoder(nn.Module):
         spatial_shapes,
         bbox_head,
         score_head,
+        distortion_head,
         query_pos_head,
         pre_bbox_head,
         integral,
@@ -392,6 +395,7 @@ class TransformerDecoder(nn.Module):
         dec_out_bboxes = []
         dec_out_logits = []
         dec_out_pred_corners = []
+        dec_out_phis = []
         dec_out_refs = []
         if not hasattr(self, "project"):
             project = weighting_function(self.reg_max, up, reg_scale)
@@ -425,8 +429,9 @@ class TransformerDecoder(nn.Module):
 
             # Refine bounding box corners using FDR, integrating previous layer's corrections
             pred_corners = bbox_head[i](output + output_detach) + pred_corners_undetach
+            phi = torch.tanh(distortion_head[i](output + output_detach))
             inter_ref_bbox = distance2bbox(
-                ref_points_initial, integral(pred_corners, project), reg_scale
+                ref_points_initial, integral(pred_corners, project, phi), reg_scale
             )
 
             if self.training or i == self.eval_idx:
@@ -436,6 +441,7 @@ class TransformerDecoder(nn.Module):
                 dec_out_logits.append(scores)
                 dec_out_bboxes.append(inter_ref_bbox)
                 dec_out_pred_corners.append(pred_corners)
+                dec_out_phis.append(phi)
                 dec_out_refs.append(ref_points_initial)
 
                 if not self.training:
@@ -449,6 +455,7 @@ class TransformerDecoder(nn.Module):
             torch.stack(dec_out_bboxes),
             torch.stack(dec_out_logits),
             torch.stack(dec_out_pred_corners),
+            torch.stack(dec_out_phis),
             torch.stack(dec_out_refs),
             pre_bboxes,
             pre_scores,
@@ -609,6 +616,16 @@ class DFINETransformer(nn.Module):
                 for _ in range(num_layers - self.eval_idx - 1)
             ]
         )
+        self.dec_distortion_head = nn.ModuleList(
+            [
+                MLP(hidden_dim, hidden_dim, 4, 3)
+                for _ in range(self.eval_idx + 1)
+            ]
+            + [
+                MLP(scaled_dim, scaled_dim, 4, 3)
+                for _ in range(num_layers - self.eval_idx - 1)
+            ]
+        )
         self.integral = Integral(self.reg_max)
 
         # init encoder output anchors and valid_mask
@@ -632,6 +649,12 @@ class DFINETransformer(nn.Module):
                 for i in range(len(self.dec_bbox_head))
             ]
         )
+        self.dec_distortion_head = nn.ModuleList(
+            [
+                self.dec_distortion_head[i] if i <= self.eval_idx else nn.Identity()
+                for i in range(len(self.dec_distortion_head))
+            ]
+        )
 
     def _reset_parameters(self, feat_channels):
         bias = bias_init_with_prob(0.01)
@@ -642,11 +665,14 @@ class DFINETransformer(nn.Module):
         init.constant_(self.pre_bbox_head.layers[-1].weight, 0)
         init.constant_(self.pre_bbox_head.layers[-1].bias, 0)
 
-        for cls_, reg_ in zip(self.dec_score_head, self.dec_bbox_head):
+        for cls_, reg_, dist_ in zip(self.dec_score_head, self.dec_bbox_head, self.dec_distortion_head):
             init.constant_(cls_.bias, bias)
             if hasattr(reg_, "layers"):
                 init.constant_(reg_.layers[-1].weight, 0)
                 init.constant_(reg_.layers[-1].bias, 0)
+            if hasattr(dist_, "layers"):
+                init.constant_(dist_.layers[-1].weight, 0)
+                init.constant_(dist_.layers[-1].bias, 0)
 
         init.xavier_uniform_(self.enc_output[0].weight)
         if self.learn_query_content:
@@ -861,13 +887,14 @@ class DFINETransformer(nn.Module):
         )
 
         # decoder
-        out_bboxes, out_logits, out_corners, out_refs, pre_bboxes, pre_logits = self.decoder(
+        out_bboxes, out_logits, out_corners, out_phis, out_refs, pre_bboxes, pre_logits = self.decoder(
             init_ref_contents,
             init_ref_points_unact,
             memory,
             spatial_shapes,
             self.dec_bbox_head,
             self.dec_score_head,
+            self.dec_distortion_head,
             self.query_pos_head,
             self.pre_bbox_head,
             self.integral,
@@ -884,6 +911,7 @@ class DFINETransformer(nn.Module):
             dn_out_logits, out_logits = torch.split(out_logits, dn_meta["dn_num_split"], dim=2)
 
             dn_out_corners, out_corners = torch.split(out_corners, dn_meta["dn_num_split"], dim=2)
+            dn_out_phis, out_phis = torch.split(out_phis, dn_meta["dn_num_split"], dim=2)
             dn_out_refs, out_refs = torch.split(out_refs, dn_meta["dn_num_split"], dim=2)
 
         if self.training:
@@ -891,18 +919,20 @@ class DFINETransformer(nn.Module):
                 "pred_logits": out_logits[-1],
                 "pred_boxes": out_bboxes[-1],
                 "pred_corners": out_corners[-1],
+                "pred_phis": out_phis[-1],
                 "ref_points": out_refs[-1],
                 "up": self.up,
                 "reg_scale": self.reg_scale,
             }
         else:
-            out = {"pred_logits": out_logits[-1], "pred_boxes": out_bboxes[-1]}
+            out = {"pred_logits": out_logits[-1], "pred_boxes": out_bboxes[-1], "pred_phis": out_phis[-1]}
 
         if self.training and self.aux_loss:
             out["aux_outputs"] = self._set_aux_loss2(
                 out_logits[:-1],
                 out_bboxes[:-1],
                 out_corners[:-1],
+                out_phis[:-1],
                 out_refs[:-1],
                 out_corners[-1],
                 out_logits[-1],
@@ -916,6 +946,7 @@ class DFINETransformer(nn.Module):
                     dn_out_logits,
                     dn_out_bboxes,
                     dn_out_corners,
+                    dn_out_phis,
                     dn_out_refs,
                     dn_out_corners[-1],
                     dn_out_logits[-1],
@@ -938,6 +969,7 @@ class DFINETransformer(nn.Module):
         outputs_class,
         outputs_coord,
         outputs_corners,
+        outputs_phis,
         outputs_ref,
         teacher_corners=None,
         teacher_logits=None,
@@ -950,9 +982,10 @@ class DFINETransformer(nn.Module):
                 "pred_logits": a,
                 "pred_boxes": b,
                 "pred_corners": c,
+                "pred_phis": e,
                 "ref_points": d,
                 "teacher_corners": teacher_corners,
                 "teacher_logits": teacher_logits,
             }
-            for a, b, c, d in zip(outputs_class, outputs_coord, outputs_corners, outputs_ref)
+            for a, b, c, e, d in zip(outputs_class, outputs_coord, outputs_corners, outputs_phis, outputs_ref)
         ]

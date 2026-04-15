@@ -6,7 +6,7 @@ __include__: [
   '../../include/dfine_hgnetv2.yml',
 ]
 
-output_dir: ./output/dfine_s_960_loss_distortion_head
+output_dir: ./output/dfine_s_960_loss_distortion_head_v2
 
 
 DFINE:
